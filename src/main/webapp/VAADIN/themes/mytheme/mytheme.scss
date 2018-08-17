@@ -33,6 +33,20 @@
 
 @mixin mytheme {
   @include valo;
+  
+  .custom-color-grid .v-grid-row.v-grid-row-stripe > td {
+    background-color: blue;
+  	
+  }
+  
+  .highlight > td {
+    background-color: red !important;
+  }
+  
+  .custom-color-grid .v-grid-row > td {
+    background-color: red;
+  	
+  }
 
   // Insert your own theme rules here
 }

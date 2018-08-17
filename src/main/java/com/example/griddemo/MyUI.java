@@ -3,6 +3,7 @@ package com.example.griddemo;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
 
 import javax.servlet.annotation.WebServlet;
 
@@ -11,29 +12,32 @@ import org.vaadin.patrik.FastNavigation;
 import com.github.javafaker.Faker;
 import com.vaadin.annotations.Theme;
 import com.vaadin.annotations.VaadinServletConfiguration;
-import com.vaadin.data.Container;
-import com.vaadin.data.Container.Indexed;
-import com.vaadin.data.Item;
-import com.vaadin.data.util.AbstractProperty;
-import com.vaadin.data.util.BeanItemContainer;
+import com.vaadin.contextmenu.GridContextMenu;
+import com.vaadin.data.Binder.Binding;
+import com.vaadin.data.Binder.BindingBuilder;
+import com.vaadin.data.converter.StringToIntegerConverter;
+import com.vaadin.data.provider.ListDataProvider;
 import com.vaadin.data.validator.EmailValidator;
-import com.vaadin.data.validator.StringLengthValidator;
+import com.vaadin.server.ExternalResource;
 import com.vaadin.server.VaadinRequest;
 import com.vaadin.server.VaadinServlet;
+import com.vaadin.shared.ui.ContentMode;
+import com.vaadin.shared.ui.ValueChangeMode;
 import com.vaadin.ui.Button;
 import com.vaadin.ui.ComboBox;
 import com.vaadin.ui.Component;
 import com.vaadin.ui.Grid;
-import com.vaadin.ui.Grid.Column;
 import com.vaadin.ui.Grid.SelectionMode;
-import com.vaadin.ui.Notification;
+import com.vaadin.ui.HorizontalLayout;
+import com.vaadin.ui.Label;
 import com.vaadin.ui.TabSheet;
 import com.vaadin.ui.TextField;
 import com.vaadin.ui.UI;
 import com.vaadin.ui.VerticalLayout;
-import com.vaadin.ui.renderers.HtmlRenderer;
-
-import elemental.json.JsonValue;
+import com.vaadin.ui.components.grid.GridRowDragger;
+import com.vaadin.ui.renderers.ButtonRenderer;
+import com.vaadin.ui.renderers.ImageRenderer;
+import com.vaadin.ui.renderers.TextRenderer;
 
 /**
  * This UI is the application entry point. A UI may either represent a browser
@@ -47,6 +51,9 @@ import elemental.json.JsonValue;
 @Theme("mytheme")
 public class MyUI extends UI {
 
+	private GridRowDragger<Person> gridRowDragger;
+	private Binding<Person, Integer> orderBinding;
+
 	@Override
 	protected void init(VaadinRequest vaadinRequest) {
 
@@ -57,163 +64,181 @@ public class MyUI extends UI {
 	}
 
 	private Component createIconButtonDemo() {
-		Grid grid = createPersonGrid();
+		Grid<Person> grid = createPersonGrid();
 
-		grid.setColumns("department", "firstName", "lastName", "email");
+		grid.setDetailsGenerator(person -> {
+			HorizontalLayout editorRoot = new HorizontalLayout();
 
-		grid.getColumn("department").setRenderer(new HtmlRenderer() {
-			@Override
-			public JsonValue encode(String value) {
-
-				return super.encode(
-						"<img src=\"https://api.adorable.io/avatars/40/" + value + ".png\" title=\"" + value + "\"/>");
-			}
+			ComboBox<String> comboBox = new ComboBox<>();
+			comboBox.setItems(Arrays.asList("foo", "bar", "baz"));
+			comboBox.addValueChangeListener(change -> {
+				String selectedValue = comboBox.getValue();
+				editorRoot.addComponent(new Label("# " + selectedValue));
+				person.data.add(selectedValue);
+				grid.getDataProvider().refreshItem(person);
+			});
+			editorRoot.addComponent(comboBox);
+			return editorRoot;
 		});
+		grid.addColumn(p -> "Edit", new ButtonRenderer<>(click -> {
+			
+			grid.setDetailsVisible(click.getItem(), !grid.isDetailsVisible(click.getItem()));
+		})).setId("tools");
+		grid.addColumn(p -> p.getData().toString()).setId("inline");
+		grid.setColumns("firstName", "lastName", "email", "department", "inline", "tools");
 
-		grid.setEditorBuffered(false);
+		grid.setCaption("Details demo");
+		return grid;
+	}
+
+	private Component createFastEditDemo() {
+		Grid<Person> grid = createPersonGrid();
+		grid.getColumns().forEach(column -> column.setSortable(false));
+		
+		gridRowDragger = new GridRowDragger<>(grid);
+		
+		UI.getCurrent().setMobileHtml5DndEnabled(true);
+
+		FastNavigation<Person> fastNavigation = new FastNavigation<>(grid, true, true);
+		
+
+		VerticalLayout verticalLayout = new VerticalLayout(grid, new Button("remove", click -> {
+			ListDataProvider<Person> dp = (ListDataProvider<Person>) grid.getDataProvider();
+			Collection<Person> items = dp.getItems();
+			if (grid.getSelectedItems() != null && !grid.getSelectedItems().isEmpty()) {
+				items.removeAll(grid.getSelectedItems());
+			}
+			dp.refreshAll();
+		}));
+		verticalLayout.setExpandRatio(grid, 1);
+		verticalLayout.setCaption("fast navigation");
+		verticalLayout.setSizeFull();
 
 		grid.setSelectionMode(SelectionMode.MULTI);
 
-		VerticalLayout layout = new VerticalLayout(grid, new Button("Remove", click -> {
-			Collection<Object> selectedRows = grid.getSelectedRows();
-			for (Object itemId : selectedRows) {
-				// when item is removed from grid's container, Grid listens for ItemSetChange
-				// events from container and will auto remove the rows from the UI
-				grid.getContainerDataSource().removeItem(itemId);
-			}
-		}));
-		layout.setCaption("iconButtonDemo");
-		return layout;
-	}
+		// grid.getEditor().setBuffered(false);
+		grid.getEditor().setEnabled(true);
 
-	private VerticalLayout createFastEditDemo() {
-		Grid grid = createPersonGrid();
-		grid.setColumns("orderNumber", "department", "firstName", "lastName", "email");
+		grid.getColumn("firstName").setEditorComponent(new TextField());
 
-		((Container.Sortable) grid.getContainerDataSource()).sort(new String[] { "orderNumber" },
-				new boolean[] { true });
-		// apply the fastnavigation extension to the grid. enables cell editing without
-		// double clicking the row
-		new FastNavigation(grid, true, true);
+		grid.getColumn("lastName").setEditorComponent(new TextField());
 
-		grid.setEditorEnabled(true);
+		TextField emailField = new TextField();
+		grid.getColumn("email").setEditorComponent(emailField);
 
-		TextField orderNumberField = new TextField();
-		grid.getColumn("orderNumber").setEditorField(orderNumberField);
+		BindingBuilder<Person, String> withValidator = grid.getEditor().getBinder().forField(emailField)
+				.withValidator(new EmailValidator("Invalid email"));
+		Binding<Person, String> bind = withValidator.bind(Person::getEmail, Person::setEmail);
+		grid.getColumn("email").setEditorBinding(bind);
 
-		for (Column column : grid.getColumns()) {
-			grid.getColumn(column.getPropertyId()).setSortable(false);
-		}
-		reNumberingInProgress = false;
-		for (Object itemId : grid.getContainerDataSource().getItemIds()) {
-			Item item = grid.getContainerDataSource().getItem(itemId);
-			AbstractProperty property = (AbstractProperty) item.getItemProperty("orderNumber");
-			property.addValueChangeListener(change -> {
-				if (reNumberingInProgress) {
-					return;
-				}
-				reNumberingInProgress = true;
-				
-				Notification.show("Value changed!");
-				grid.sort("orderNumber");
-				grid.clearSortOrder();
-	
-				int i = 1;
-				Indexed container = grid.getContainerDataSource();
-				for (Object itemId2 : container.getItemIds()) {
-					System.out.println(((Person) itemId).getFirstName() + " :: " + ((Person) itemId2).getFirstName());
-					container.getItem(itemId2).getItemProperty("orderNumber").setValue(i++);
-				}
-	
-				grid.scrollTo(itemId);
-				
-				reNumberingInProgress = false;
+		ComboBox<Object> comboBox = new ComboBox<>();
+		comboBox.setItems(Arrays.asList("Admin", "Services", "Marketing"));
+		grid.getColumn("department").setEditorComponent(comboBox);
+
+		grid.addColumn(person -> {
+			return new ExternalResource("https://api.adorable.io/avatars/40/" + person.getDepartment() + ".png");
+		}, new ImageRenderer()).setCaption("Generated column").setId("gc");
+
+		grid.setDescriptionGenerator(p -> {
+			return "<strong>" + p.getFirstName() + "</strong>" + " " + p.getLastName();
+		}, ContentMode.HTML);
+
+		TextField orderField = new TextField();
+		orderField.setValueChangeMode(ValueChangeMode.BLUR);
+		orderBinding = grid.getEditor().getBinder()
+
+				.forField(orderField)
+
+				.withConverter(new StringToIntegerConverter("invalid number"))
+
+				.bind(person -> {
+					List<Person> items = (List<Person>) ((ListDataProvider) grid.getDataProvider()).getItems();
+
+					// use 1-based indices in the UI
+					return items.indexOf(person) + 1;
+
+				}, (person, newValue) -> {
+					// use 0-based indices in the array
+					newValue--;
+					if (newValue < 0) {
+						newValue = 0;
+					}
+					ListDataProvider dataProvider = (ListDataProvider) grid.getDataProvider();
+					List<Person> items = (List<Person>) dataProvider.getItems();
+					if (newValue > items.size() - 1) {
+						newValue = items.size() - 1;
+					}
+
+					int originalIndex = items.indexOf(person);
+					items.remove(person);
+					items.add(newValue, person);
+					dataProvider.refreshAll();
+					grid.getEditor().cancel();
+					grid.scrollTo(newValue);
+					// TODO re-order list
+				});
+		grid.addColumn(person -> {
+			List<Person> items = (List<Person>) ((ListDataProvider) grid.getDataProvider()).getItems();
+
+			// use 1-based indices in the UI
+			return items.indexOf(person) + 1;
+
+		}, new TextRenderer()).setCaption("#").setId("#").setEditorBinding(orderBinding);
+
+		// Example on how to theme even & odd rows
+		// grid.addStyleName("custom-color-grid");
+
+		// Example on how to theme based on row content
+		// grid.setStyleGenerator(item -> {
+		// if(item.lastName.length()>6) {
+		// return "highlight";
+		// }
+		// return null;
+		// });
+		grid.setColumns("#", "gc", "firstName", "lastName", "email", "department");
+
+		grid.getColumn("#").setHidden(true);
+		grid.getColumn("#").setHidable(true);
+		grid.getColumn("department").setHidden(true);
+		grid.getColumn("department").setHidable(true);
+		GridContextMenu<Person> contextMenu = new GridContextMenu<>(grid);
+		contextMenu.addGridBodyContextMenuListener(e -> {
+			contextMenu.removeItems();
+			contextMenu.addItem("Remove", select -> {
+				ListDataProvider<Person> dp = ((ListDataProvider<Person>) grid.getDataProvider());
+				dp.getItems().remove(e.getItem());
+				dp.refreshAll();
 			});
-		}
-//		grid.getEditorFieldGroup().addCommitHandler(new CommitHandler() {
-//			
-//			@Override
-//			public void preCommit(CommitEvent commitEvent) throws CommitException {
-//				// TODO Auto-generated method stub
-//				
-//			}
-//			
-//			@Override
-//			public void postCommit(CommitEvent commitEvent) throws CommitException {
-//				Notification.show("post commit");
-//			}
-//		});
-//		grid.setEditorBuffered(true);
-		// TODO make work without internal NPEs
-//		orderNumberField.addValueChangeListener(change -> {
-//			
-//			Property propertyDataSource = orderNumberField.getPropertyDataSource();
-//
-//			Notification.show("Value changed!");
-//			grid.sort("orderNumber");
-//			grid.clearSortOrder();
-//
-//			Object editedItemId = grid.getEditedItemId();
-//
-//			if (editedItemId == null) {
-//				return;
-//			}
-//
-//			int i = 1;
-//			Indexed container = grid.getContainerDataSource();
-//			for (Object itemId : container.getItemIds()) {
-//				if (editedItemId == itemId) {
-//					i++;
-//					continue;
-//				}
-//				container.getItem(itemId).getItemProperty("orderNumber").setValue(i++);
-//			}
-//
-//			grid.scrollTo(editedItemId);
-//		});
-
-		ComboBox departmentField = new ComboBox();
-		departmentField.addItems(Arrays.asList("Admin", "Services", "Marketing"));
-		grid.getColumn("department").setEditorField(departmentField);
-
-		((TextField) grid.getColumn("email").getEditorField()).addValidator(new EmailValidator("invalid email"));
-
-		((TextField) grid.getColumn("firstName").getEditorField()).addValidator(
-				new StringLengthValidator("name needs to be at least 3 characters", 3, Integer.MAX_VALUE, false));
-
-		grid.setCellStyleGenerator(cell -> {
-			if (cell.getPropertyId().equals("lastName") && (cell.getProperty().getValue() + "").length() > 6) {
-				return "highlight";
-			}
-			return null;
+			grid.getEditor().cancel();
 		});
-		VerticalLayout fastEditDemo = new VerticalLayout(grid, new Button("foo"));
 
-		fastEditDemo.setCaption("Fast edit demo");
-		return fastEditDemo;
+		return verticalLayout;
 	}
 
-	private Grid createPersonGrid() {
-		Grid grid = new Grid();
+	private Grid<Person> createPersonGrid() {
+		Grid<Person> grid = new Grid<Person>(Person.class);
 
-		BeanItemContainer<Person> data = new BeanItemContainer<>(Person.class);
-		data.addAll(getPersons());
+		grid.setColumns("firstName", "lastName", "email", "department");
 
-		grid.setContainerDataSource(data);
+		grid.setItems(getPersons());
+
+		// ListDataProvider<Person> dataProvider = new ListDataProvider<>(getPersons());
+		//
+		// grid.setDataProvider(dataProvider);
+
 		grid.setSizeFull();
 		return grid;
 	}
 
 	private ArrayList<Person> getPersons() {
 		ArrayList<Person> persons = new ArrayList<>();
-		for (int i = 1; i < 42; i++) {
+		for (int i = 1; i < 420; i++) {
 			persons.add(new Person(i));
 		}
 		return persons;
 	}
 
 	public static Faker faker = new Faker();
-	private boolean reNumberingInProgress;
 
 	public class Person {
 		String firstName = faker.name().firstName();
@@ -222,6 +247,7 @@ public class MyUI extends UI {
 		private String department = faker.options().option("Admin", "Services", "Marketing");
 		private boolean active = faker.bool().bool();
 		private int orderNumber;
+		private List<String> data = new ArrayList<>();
 
 		public Person(int orderNumber) {
 			this.orderNumber = orderNumber;
@@ -273,6 +299,14 @@ public class MyUI extends UI {
 
 		public void setOrderNumber(int orderNumber) {
 			this.orderNumber = orderNumber;
+		}
+
+		public List<String> getData() {
+			return data;
+		}
+
+		public void setData(List<String> data) {
+			this.data = data;
 		}
 
 	}
